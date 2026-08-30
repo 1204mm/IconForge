@@ -1,0 +1,50 @@
+:root {
+  --bg: #141519;
+  --bg-panel: #1c1e24;
+  --bg-panel-2: #22252c;
+  --bg-input: #171920;
+  --border: #2c2f38;
+  --border-soft: #262931;
+  --text: #e8eaf0;
+  --text-dim: #9aa0ad;
+  --text-faint: #6b7180;
+  --accent: #f5a524;
+  --accent-hot: #fb923c;
+  --accent-soft: rgba(245, 165, 36, 0.12);
+  --accent-border: rgba(245, 165, 36, 0.35);
+  --danger: #f87171;
+  --ok: #4ade80;
+  --mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #app {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  user-select: none;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #33363f; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #434751; }
+
+/* 透明棋盘格 */
+.checkerboard {
+  background-image:
+    linear-gradient(45deg, #2a2d35 25%, transparent 25%),
+    linear-gradient(-45deg, #2a2d35 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #2a2d35 75%),
+    linear-gradient(-45deg, transparent 75%, #2a2d35 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-color: #1f222a;
+}

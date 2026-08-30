@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
 import { OpenImageDialog, ExportIcons } from '../wailsjs/go/main/App'
+import { t, tErr, setLang, isZh } from './i18n'
 
 /* ---------- 状态 ---------- */
 const imgInfo = ref(null)          // { name, width, height, dataUrl, detectedRadius, cornerDetected }
@@ -62,7 +63,7 @@ function applyImage(info) {
 
 function showError(e) {
   const msg = typeof e === 'string' ? e : (e.message || String(e))
-  toast.value = { type: 'err', text: msg }
+  toast.value = { type: 'err', text: tErr(msg) }
 }
 
 /* ---------- Canvas 编辑器 ---------- */
@@ -111,8 +112,8 @@ function draw() {
   ctx.clip()
   ctx.fillStyle = pattern
   ctx.fillRect(cx, cy, cs, cs)
-  // 3. 裁剪区内重绘原图（正常亮度）
-  ctx.drawImage(im, cx, cy, cs, cs)
+  // 3. 裁剪区内重绘原图（从裁剪框源区域裁出，与导出一致）
+  ctx.drawImage(im, crop.x, crop.y, crop.size, crop.size, cx, cy, cs, cs)
   ctx.restore()
 
   // 4. 裁剪框描边
@@ -189,13 +190,9 @@ function onPointerDown(e) {
   const py = e.clientY - rect.top
 
   const { cx, cy, cs } = cropCanvasRect(cv)
-  // 点在裁剪框内 -> 开始拖动
+  // 点在裁剪框内 -> 开始拖动，记录按下时的初始位置作为稳定基准
   if (px >= cx - 4 && px <= cx + cs + 4 && py >= cy - 4 && py <= cy + cs + 4) {
-    const imgScale = crop.size / cs
-    dragState = {
-      offX: (px - cx) * imgScale,
-      offY: (py - cy) * imgScale,
-    }
+    dragState = { startX: crop.x, startY: crop.y, pointerX: px, pointerY: py }
     cv.setPointerCapture(e.pointerId)
     e.preventDefault()
   }
@@ -216,10 +213,11 @@ function onPointerMove(e) {
     return
   }
 
-  const { cx, cy, cs } = cropCanvasRect(cv)
+  const { cs } = cropCanvasRect(cv)
   const imgScale = crop.size / cs
-  let nx = (px - cx) * imgScale - dragState.offX
-  let ny = (py - cy) * imgScale - dragState.offY
+  // 用按下时的初始位置 + 鼠标位移增量，避免反馈振荡
+  const nx = dragState.startX + (px - dragState.pointerX) * imgScale
+  const ny = dragState.startY + (py - dragState.pointerY) * imgScale
   clampCrop(nx, ny)
   draw()
 }
@@ -296,7 +294,7 @@ function toggleAll() {
 async function doExport() {
   if (!imgInfo.value || exporting.value) return
   if (selectedSizes.value.length === 0) {
-    toast.value = { type: 'err', text: '请至少选择一个 ICO 尺寸' }
+    toast.value = { type: 'err', text: t('needSelectSize') }
     return
   }
   exporting.value = true
@@ -311,7 +309,7 @@ async function doExport() {
       sizes: selectedSizes.value,
     })
     if (path) {
-      toast.value = { type: 'ok', text: '已保存：' + path }
+      toast.value = { type: 'ok', text: t('saved', { path }) }
     }
   } catch (e) {
     showError(e)
@@ -342,7 +340,7 @@ onMounted(() => {
         </svg>
         <div class="brand-text">
           <span class="brand-name">IconForge</span>
-          <span class="brand-sub">图标锻造 · PNG / JPG → ICO</span>
+          <span class="brand-sub">{{ t('brandSub') }}</span>
         </div>
       </div>
       <div v-if="imgInfo" class="file-meta">
@@ -353,8 +351,9 @@ onMounted(() => {
         </svg>
         <span class="file-name" :title="imgInfo.name">{{ imgInfo.name }}</span>
         <span class="file-dim">{{ imgInfo.width }} × {{ imgInfo.height }}</span>
-        <button class="btn-ghost" @click="openImage">更换图片</button>
+        <button class="btn-ghost" @click="openImage">{{ t('changeImage') }}</button>
       </div>
+      <button class="btn-lang" :title="t('language')" @click="setLang(isZh ? 'en' : 'zh')">{{ isZh ? 'EN' : '中' }}</button>
     </header>
 
     <!-- 空状态 -->
@@ -365,10 +364,10 @@ onMounted(() => {
           <circle cx="9" cy="10" r="1.6"/>
           <path d="m21 16-4.5-4.5L7 21"/>
         </svg>
-        <div class="dz-title">{{ loading ? '正在读取…' : '点击选择图片' }}</div>
-        <div class="dz-sub">支持 PNG / JPG / BMP / GIF，建议使用 256×256 以上正方形图片</div>
+        <div class="dz-title">{{ loading ? t('loading') : t('selectImage') }}</div>
+        <div class="dz-sub">{{ t('emptySub') }}</div>
         <div class="dz-hint">
-          <span>自动识别圆角背景</span><i></i><span>手动裁剪</span><i></i><span>多尺寸 ICO 导出</span>
+          <span>{{ t('hintCorner') }}</span><i></i><span>{{ t('hintCrop') }}</span><i></i><span>{{ t('hintMulti') }}</span>
         </div>
       </div>
     </div>
@@ -384,7 +383,7 @@ onMounted(() => {
                   @pointerup="onPointerUp"></canvas>
         </div>
         <div class="preview-bar">
-          <span class="pb-label">尺寸预览</span>
+          <span class="pb-label">{{ t('sizePreview') }}</span>
           <div class="pb-items">
             <div v-for="(s, i) in PREVIEW_SIZES" :key="s" class="pb-item">
               <div class="pb-canvas checkerboard"><canvas :ref="el => previewRefs[i] = el"></canvas></div>
@@ -402,7 +401,7 @@ onMounted(() => {
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 8a4 4 0 0 1 4-4h12v12a4 4 0 0 1-4 4H4V8z"/>
             </svg>
-            <span>圆角切割</span>
+            <span>{{ t('cornerCut') }}</span>
             <label class="switch">
               <input type="checkbox" v-model="cornerOn">
               <span class="slider"></span>
@@ -413,19 +412,19 @@ onMounted(() => {
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>
               </svg>
-              已自动识别圆角背景，建议半径 {{ imgInfo.detectedRadius }}px
-              <button v-if="radius !== imgInfo.detectedRadius" class="link" @click="radius = Math.min(imgInfo.detectedRadius, maxRadius)">恢复</button>
+              {{ t('cornerDetected', { r: imgInfo.detectedRadius }) }}
+              <button v-if="radius !== imgInfo.detectedRadius" class="link" @click="radius = Math.min(imgInfo.detectedRadius, maxRadius)">{{ t('restore') }}</button>
             </div>
             <div v-else class="auto-badge dim">
-              未检测到圆角背景，请手动调整半径
+              {{ t('cornerNotDetected') }}
             </div>
             <div class="slider-row">
-              <span class="slider-label">半径</span>
+              <span class="slider-label">{{ t('radius') }}</span>
               <input type="range" min="0" :max="maxRadius" step="1" v-model.number="radius">
               <span class="slider-val">{{ radius }}px</span>
             </div>
           </template>
-          <p class="sec-tip">把圆角外的多余背景切除为透明，滑块向右切得更多</p>
+          <p class="sec-tip">{{ t('cornerTip') }}</p>
         </section>
 
         <!-- 手动裁剪 -->
@@ -435,11 +434,11 @@ onMounted(() => {
               <path d="M6 2v14a2 2 0 0 0 2 2h14"/>
               <path d="M18 22V8a2 2 0 0 0-2-2H2"/>
             </svg>
-            <span>正方形裁剪</span>
-            <span class="sec-badge">拖动画布调整位置</span>
+            <span>{{ t('squareCrop') }}</span>
+            <span class="sec-badge">{{ t('cropBadge') }}</span>
           </div>
           <div class="slider-row">
-            <span class="slider-label">边长</span>
+            <span class="slider-label">{{ t('side') }}</span>
             <input type="range" min="64" :max="minSide" step="1" v-model.number="crop.size"
                    @input="clampCrop(crop.x, crop.y)">
             <span class="slider-val">{{ crop.size }}px</span>
@@ -447,7 +446,7 @@ onMounted(() => {
           <div class="crop-xy">
             <span>X <b>{{ crop.x }}</b></span>
             <span>Y <b>{{ crop.y }}</b></span>
-            <button class="btn-mini" @click="centerCrop">居中</button>
+            <button class="btn-mini" @click="centerCrop">{{ t('center') }}</button>
           </div>
         </section>
 
@@ -460,8 +459,8 @@ onMounted(() => {
               <rect x="3" y="14" width="7" height="7" rx="1"/>
               <rect x="14" y="14" width="7" height="7" rx="1"/>
             </svg>
-            <span>ICO 尺寸</span>
-            <button class="link" @click="toggleAll">{{ allSelected ? '全不选' : '全选' }}</button>
+            <span>{{ t('icoSizes') }}</span>
+            <button class="link" @click="toggleAll">{{ allSelected ? t('deselectAll') : t('selectAll') }}</button>
           </div>
           <div class="size-grid">
             <label v-for="s in SIZE_OPTIONS" :key="s" class="size-chip" :class="{ on: sizeSel[s] }">
@@ -469,7 +468,7 @@ onMounted(() => {
               <span>{{ s }}×{{ s }}</span>
             </label>
           </div>
-          <p class="sec-tip">导出为 ZIP：含各尺寸独立 ICO（icon_16.ico…）+ 多尺寸合一的 icon.ico</p>
+          <p class="sec-tip">{{ t('exportTip') }}</p>
         </section>
 
         <!-- 导出 -->
@@ -481,7 +480,7 @@ onMounted(() => {
               <path d="M12 15V3"/>
             </svg>
             <span v-else class="spinner"></span>
-            {{ exporting ? '正在生成…' : '导出图标 ZIP' }}
+            {{ exporting ? t('exporting') : t('exportBtn') }}
           </button>
         </div>
       </aside>
@@ -676,6 +675,16 @@ input[type=range]::-webkit-slider-thumb {
   transition: all .15s;
 }
 .btn-ghost:hover { color: var(--text); border-color: var(--accent-border); }
+
+.btn-lang {
+  flex-shrink: 0;
+  min-width: 34px;
+  border: 1px solid var(--border); background: var(--bg-panel-2);
+  color: var(--text-dim); font-size: 11px; font-weight: 600; letter-spacing: .5px;
+  padding: 4px 8px; border-radius: 6px; cursor: pointer;
+  transition: all .15s;
+}
+.btn-lang:hover { color: var(--accent); border-color: var(--accent-border); }
 
 .btn-mini {
   margin-left: auto;

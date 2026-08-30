@@ -23,8 +23,9 @@ func pixelAt(img image.Image, bounds image.Rectangle, x, y int) color.RGBA {
 }
 
 // isBg 判断像素是否属于角部背景（透明或与背景色接近）
+// 阈值 12：支持"不透明浅色圆角 + 略深主体"的低对比场景（如 iOS 风格浅蓝白图标）
 func isBg(c color.RGBA, bg color.RGBA) bool {
-	return c.A < 128 || colorDistance(c, bg) <= 60
+	return c.A < 128 || colorDistance(c, bg) <= 12
 }
 
 // DetectCornerRadius 自动检测图片四角是否有多余背景（圆角外区域），
@@ -58,7 +59,8 @@ func DetectCornerRadius(img image.Image) (radius int, detected bool) {
 		bg := averageColor(img, cx+dx, cy+dy, 3, 3)
 
 		// 背景与中心内容差异必须明显，否则该角没有可切背景
-		if colorDistance(bg, content) < 30 {
+		// 阈值 8：兼容浅色圆角（如白底→浅蓝主体，色差~12）
+		if colorDistance(bg, content) < 8 {
 			continue
 		}
 
@@ -101,6 +103,11 @@ func DetectCornerRadius(img image.Image) (radius int, detected bool) {
 	if result > maxR {
 		result = maxR
 	}
+	// 有效半径下限：小于图像边长 3% 的圆角基本是噪点/渐变误判，直接拒绝
+	minR := int(math.Min(float64(w), float64(h))) / 33 // ≈3%
+	if result < minR {
+		return 0, false
+	}
 	if result < 4 {
 		result = 4
 	}
@@ -137,6 +144,15 @@ func scanCornerDiagonal(img image.Image, bounds image.Rectangle, cx, cy, dx, dy 
 				}
 			}
 			if ok {
+				// 突变性校验：t-1 像素必须仍"明显接近背景"（distance < 8）。
+				// 真实圆角的过渡是突变的（透明→不透明），t-1 几乎与背景一致；
+				// 渐变图像的过渡是平滑的，t-1 距背景已超阈值 → 视为渐变，跳过。
+				if step > 1 {
+					prev := pixelAt(img, bounds, cx+dx*(step-1), cy+dy*(step-1))
+					if colorDistance(prev, bg) > 8 {
+						continue
+					}
+				}
 				return step, true
 			}
 			// 视为噪点，继续向内扫描
@@ -479,8 +495,9 @@ func leastSquaresCircleFixedCenter(xs, ys []float64, dx, dy int) (int, bool) {
 }
 
 // isFg 颜色差异大于阈值即视为前景
+// 阈值 10：与 isBg(<=12) 配套，保留少量缓冲（12-15 是抗锯齿过渡区）
 func isFg(c, bg color.RGBA) bool {
-	return colorDistance(c, bg) > 30
+	return colorDistance(c, bg) > 10
 }
 
 // averageColor 采样一个区域的平均色

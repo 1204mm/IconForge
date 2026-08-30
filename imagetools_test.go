@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
 	"testing"
 )
 
@@ -272,4 +273,60 @@ func TestBuildIconPipeline(t *testing.T) {
 		}
 	}
 	t.Logf("生成 ICO 大小: %d 字节", len(data))
+}
+
+func TestDebugUserImage(t *testing.T) {
+	os.Setenv("ICONFORGE_DEBUG", "1")
+	f, err := os.Open("debug_user.png")
+	if err != nil {
+		t.Skip("debug_user.png not found, skip:", err)
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	t.Logf("size: %dx%d, colorModel=%T", w, h, img.ColorModel())
+
+	// 检查文件本身是否带 alpha 通道
+	rawData, _ := os.ReadFile("debug_user.png")
+	t.Logf("file size: %d bytes", len(rawData))
+	// 用 png.Decode 拿到带 alpha 的原始数据
+	if pngImg, err := png.Decode(f); err == nil {
+		// 查 4 个角
+		for _, c := range [][2]int{{0, 0}, {5, 5}, {10, 10}, {50, 50}, {100, 100}, {200, 200}} {
+			r, g, b, a := pngImg.At(c[0], c[1]).RGBA()
+			t.Logf("PNG (%d,%d): R=%d G=%d B=%d A=%d (raw A=%d)", c[0], c[1], r>>8, g>>8, b>>8, a>>8, a)
+		}
+	}
+
+	corners := [4]string{"TL", "TR", "BL", "BR"}
+	cs := [4][4]int{{0, 0, 1, 1}, {w - 1, 0, -1, 1}, {0, h - 1, 1, -1}, {w - 1, h - 1, -1, -1}}
+	for i, c := range cs {
+		cx, cy, dx, dy := c[0], c[1], c[2], c[3]
+		bg := averageColor(img, cx+dx, cy+dy, 3, 3)
+		t.Logf("[%s] bg3x3: R=%d G=%d B=%d A=%d", corners[i], bg.R, bg.G, bg.B, bg.A)
+		// 高密度采样对角线像素
+		for d := 1; d <= 400; d++ {
+			x := cx + dx*d
+			y := cy + dy*d
+			if x < 0 || x >= w || y < 0 || y >= h {
+				break
+			}
+			c := pixelAt(img, bounds, x, y)
+			dist := colorDistance(c, bg)
+			isB := isBg(c, bg)
+			isF := isFg(c, bg)
+			if d <= 5 || d%20 == 0 || (isF && d < 200) {
+				t.Logf("  step=%d (%d,%d): R=%d G=%d B=%d A=%d  dist=%d isBg=%v isFg=%v", d, x, y, c.R, c.G, c.B, c.A, dist, isB, isF)
+			}
+		}
+	}
+	content := averageColor(img, w/2-4, h/2-4, 8, 8)
+	t.Logf("center: R=%d G=%d B=%d A=%d", content.R, content.G, content.B, content.A)
+
+	r, ok := DetectCornerRadius(img)
+	t.Logf("=== r=%d detected=%v ===", r, ok)
 }

@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"math"
+	"os"
 	"sort"
 
 	"github.com/disintegration/imaging"
@@ -78,13 +80,14 @@ func DetectCornerRadius(img image.Image) (radius int, detected bool) {
 		}
 
 		r := int(float64(e-t)/0.7071) + 1
-		if r > 0 {
-			// 用最小二乘圆弧拟合精化半径（更稳更准），结果合理时采用
-			if rf, okf := fitCornerArc(img, bounds, cx, cy, dx, dy, bg, t, r); okf && rf >= r/2 && rf <= r*3/2 {
-				r = rf
+			if r > 0 {
+				// 沿圆角弧段 [t, e] 采样边界点做最小二乘圆拟合精化。
+				// 合理范围：拟合半径不应超出 e（圆角弧止于该位置）。
+				if rf, okf := fitCornerArc(img, bounds, cx, cy, dx, dy, bg, t, e); okf && rf >= 2 && rf <= e {
+					r = rf
+				}
+				radii = append(radii, r)
 			}
-			radii = append(radii, r)
-		}
 	}
 	if len(radii) == 0 {
 		return 0, false
@@ -108,9 +111,10 @@ func DetectCornerRadius(img image.Image) (radius int, detected bool) {
 func scanCornerDiagonal(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int, bg color.RGBA) (int, bool) {
 	w := bounds.Dx()
 	h := bounds.Dy()
+	// 扫描上限放大到 1000：支持大半径圆角（>200px），原 200 cap 在 1024 图 20% 半径时刚好不够
 	limit := int(math.Min(float64(w), float64(h))) / 3
-	if limit > 200 {
-		limit = 200
+	if limit > 1000 {
+		limit = 1000
 	}
 	for step := 1; step < limit; step++ {
 		x := cx + dx*step
@@ -143,6 +147,10 @@ func scanCornerDiagonal(img image.Image, bounds image.Rectangle, cx, cy, dx, dy 
 
 // cornerBgUniform 校验角部背景区域颜色均匀（真实纯色背景），排除渐变/照片
 func cornerBgUniform(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int, bg color.RGBA, t int) bool {
+	// 透明背景：跳过均匀性校验。角部本来就是全透的，曲线抗锯齿的半透像素会被阈值误判。
+	if bg.A < 20 {
+		return true
+	}
 	w := bounds.Dx()
 	h := bounds.Dy()
 	// 采样点都限制在背景区域内（对角线转折点 t 以内）
@@ -169,13 +177,14 @@ func cornerBgUniform(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int
 func scanCornerEdges(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int, bg color.RGBA) (int, bool) {
 	w := bounds.Dx()
 	h := bounds.Dy()
-	rowLimit := h / 3
-	if rowLimit > 200 {
-		rowLimit = 200
+	// 扫描上限改为 h/2、w/2，cap 1000：原 /3 + 200 cap 在 1024 图 20% 半径时刚好够不到 col=200
+	rowLimit := h / 2
+	if rowLimit > 1000 {
+		rowLimit = 1000
 	}
-	colLimit := w / 3
-	if colLimit > 200 {
-		colLimit = 200
+	colLimit := w / 2
+	if colLimit > 1000 {
+		colLimit = 1000
 	}
 	best := 0
 	found := false
@@ -201,80 +210,277 @@ func scanCornerEdges(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int
 	return best, found
 }
 
-// fitCornerArc 沿圆角弧段采样一组色块边界点，用最小二乘拟合圆角半径 r，
-// 比单点估算（对角线+边缘）更稳更准。仅采集 v∈[t, t+0.72r] 的纯弧上样本，避开 pad 直线段。
-func fitCornerArc(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int, bg color.RGBA, t, rInit int) (int, bool) {
+// fitCornerArc 沿圆角弧段采样色块（前景）外边界，做最小二乘圆弧拟合。
+// 扫描策略：沿"两条边"方向从角点向内逐行/列找前景边界点。
+// 范围使用 [t, maxE]：t 之前是角部纯背景；maxE 是保守上界（避免扫描太深导致包含内部色块）。
+//
+// 关键改进：扫描方向固定从"边"出发，遇到前景就停——不论该行/列是直线段还是弧段，
+// 只要该行/列上"背景 → 前景"转折点都参与拟合，规避真实图中内部镂空/渐变的干扰。
+// 用一般圆方程 (x-A)²+(y-B)²=R² 做最小二乘，兼容 pad 不等、背景非纯色等真实图片。
+func fitCornerArc(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int, bg color.RGBA, t, maxE int) (int, bool) {
 	w := bounds.Dx()
 	h := bounds.Dy()
-	if t < 2 || rInit <= 0 {
+	if t < 2 || maxE <= t {
 		return 0, false
 	}
-	vStart := t
-	vEnd := t + int(float64(rInit)*0.72) // 弧止于 pad+r ≈ t + 0.7071*r
-	if vEnd >= h {
-		vEnd = h - 1
+	// 扫描范围：从 t 到 maxE（maxE 取较松的上界：e + r/2，避免裁剪真实圆角）
+	maxU := maxE + (maxE-t)/2
+	if maxU >= w {
+		maxU = w - 1
 	}
-	if vStart >= vEnd {
+	if maxU >= h {
+		maxU = h - 1
+	}
+	minU := t
+	if minU >= maxU {
 		return 0, false
 	}
 
 	var xs, ys []float64
-	for v := vStart; v <= vEnd; v++ {
+	// 沿两条边方向各采样：水平行（y 取 minU..maxU）找 x 拐点；垂直列（x 取 minU..maxU）找 y 拐点
+	for v := minU; v <= maxU; v++ {
 		py := cy + dy*v
 		if py < 0 || py >= h {
 			break
 		}
-		u := 0
-		for u < w {
-			px := cx + dx*u
-			if px < 0 || px >= w {
-				break
-			}
-			if !isBg(pixelAt(img, bounds, px, py), bg) {
-				break
-			}
-			u++
+		if u, ok := findEdgeAlongRow(img, bounds, cx, cy, dx, dy, v, bg); ok {
+			xs = append(xs, float64(u))
+			ys = append(ys, float64(v))
 		}
-		if u < 3 {
-			continue
-		}
-		xs = append(xs, float64(u))
-		ys = append(ys, float64(v))
 	}
-	if len(xs) < 4 {
+	for u := minU; u <= maxU; u++ {
+		px := cx + dx*u
+		if px < 0 || px >= w {
+			break
+		}
+		if v, ok := findEdgeAlongCol(img, bounds, cx, cy, dx, dy, u, bg); ok {
+			xs = append(xs, float64(u))
+			ys = append(ys, float64(v))
+		}
+	}
+	if len(xs) < 5 {
+		if os.Getenv("ICONFORGE_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "fitCornerArc: 样本不足 (n=%d) 角=(%d,%d) dir=(%d,%d) t=%d maxE=%d\n", len(xs), cx, cy, dx, dy, t, maxE)
+		}
 		return 0, false
 	}
-
-	// 圆弧方程 (x-C)²+(y-C)²=r²（圆心在 (C,C)，C=pad+r）
-	// 展开： x²+y² = 2C(x+y) + (r²-2C²)
-	// 对样本做线性最小二乘：Y=x²+y², X=x+y, Y=slope·X+intercept，slope=2C, intercept=r²-2C²
-	n := float64(len(xs))
-	var sx, sy, sxx, sxy float64
-	for i := range xs {
-		X := xs[i] + ys[i]
-		Y := xs[i]*xs[i] + ys[i]*ys[i]
-		sx += X
-		sy += Y
-		sxx += X * X
-		sxy += X * Y
+	if os.Getenv("ICONFORGE_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "fitCornerArc: 样本数=%d 角=(%d,%d) dir=(%d,%d) t=%d maxE=%d\n", len(xs), cx, cy, dx, dy, t, maxE)
+		for i := range xs {
+			fmt.Fprintf(os.Stderr, "  pt=(%d,%d)\n", int(xs[i]), int(ys[i]))
+		}
 	}
-	denom := n*sxx - sx*sx
+	// 圆角弧的圆心必在角点出发的 45° 对角线方向上（dx==dy），用 A=B 约束做单变量最小二乘，
+	// 比 3 变量一般圆方程更稳定（数据点都在对角线方向，3 变量欠约束）
+	r, ok := leastSquaresCircleFixedCenter(xs, ys, dx, dy)
+	if ok {
+		// 物理合理性：圆心 C0 = dx*pad+dx*r 应在图片内；半径在合理范围
+		if r < 2 || r > maxE {
+			if os.Getenv("ICONFORGE_DEBUG") == "1" {
+				fmt.Fprintf(os.Stderr, "  reject: r=%d 超出 [2,%d]\n", r, maxE)
+			}
+			return 0, false
+		}
+		if os.Getenv("ICONFORGE_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "fitCornerArc: 拟合 r=%d\n", r)
+		}
+	}
+	return r, ok
+}
+
+// findEdgeAlongRow 在 y=cy+dy*v 这一行上从角点 cx+dx 方向出发，
+// 找到"第一次出现连续 3 像素为前景（颜色与背景差异 > 阈值）"的 x 位置作为边界。
+func findEdgeAlongRow(img image.Image, bounds image.Rectangle, cx, cy, dx, dy, v int, bg color.RGBA) (int, bool) {
+	w := bounds.Dx()
+	h := bounds.Dy()
+	py := cy + dy*v
+	if py < 0 || py >= h {
+		return 0, false
+	}
+	startX := cx + dx
+	if startX < 0 {
+		startX = 0
+	}
+	end := startX + dx*w/3 // 沿方向最多扫 1/3 边长
+	if dx > 0 {
+		if end > w {
+			end = w
+		}
+	} else {
+		if end < 0 {
+			end = 0
+		}
+	}
+	for x := startX; ; x += dx {
+		if dx > 0 && x >= end || dx < 0 && x <= end {
+			return 0, false
+		}
+		if x < 0 || x >= w {
+			return 0, false
+		}
+		// 连续 3 像素都是前景
+		if isFg(pixelAt(img, bounds, x, py), bg) &&
+			x+dx >= 0 && x+dx < w && isFg(pixelAt(img, bounds, x+dx, py), bg) &&
+			x+2*dx >= 0 && x+2*dx < w && isFg(pixelAt(img, bounds, x+2*dx, py), bg) {
+			return x, true
+		}
+	}
+}
+
+// findEdgeAlongCol 在 x=cx+dx*u 这一列上找 y 边界，逻辑同 findEdgeAlongRow
+func findEdgeAlongCol(img image.Image, bounds image.Rectangle, cx, cy, dx, dy, u int, bg color.RGBA) (int, bool) {
+	w := bounds.Dx()
+	h := bounds.Dy()
+	px := cx + dx*u
+	if px < 0 || px >= w {
+		return 0, false
+	}
+	startY := cy + dy
+	if startY < 0 {
+		startY = 0
+	}
+	end := startY + dy*h/3
+	if dy > 0 {
+		if end > h {
+			end = h
+		}
+	} else {
+		if end < 0 {
+			end = 0
+		}
+	}
+	for y := startY; ; y += dy {
+		if dy > 0 && y >= end || dy < 0 && y <= end {
+			return 0, false
+		}
+		if y < 0 || y >= h {
+			return 0, false
+		}
+		if isFg(pixelAt(img, bounds, px, y), bg) &&
+			y+dy >= 0 && y+dy < h && isFg(pixelAt(img, bounds, px, y+dy), bg) &&
+			y+2*dy >= 0 && y+2*dy < h && isFg(pixelAt(img, bounds, px, y+2*dy), bg) {
+			return y, true
+		}
+	}
+}
+
+// leastSquaresCircle 对点集做一般圆方程 (x-A)²+(y-B)²=R² 的最小二乘拟合。
+// 展开： x²+y² = 2Ax + 2By + (R²-A²-B²)，线性化为 M·[A,B,C]^T = b，克莱姆法则求解。
+func leastSquaresCircle(xs, ys []float64, w, h int) (int, bool) {
+	n := float64(len(xs))
+	var sx, sy, sxx, syy, sxy float64
+	var b0, b1, b2 float64
+	for i := range xs {
+		x, y := xs[i], ys[i]
+		sx += x
+		sy += y
+		sxx += x * x
+		syy += y * y
+		sxy += x * y
+		p := x*x + y*y
+		b0 += x * p
+		b1 += y * p
+		b2 += p
+	}
+	// 圆方程 (x-A)²+(y-B)²=R² → x²+y² = 2A·x + 2B·y + (R²-A²-B²)
+	// 设 c₀ = R²-A²-B²，对 A,B,c₀ 求偏导得线性方程组
+	//   [2Σx²  2Σxy  Σx ] [A ]   [Σx·p]
+	//   [2Σxy  2Σy²  Σy ] [B ] = [Σy·p]    (p = x²+y²)
+	//   [Σx    Σy    n  ] [c₀]   [Σp    ]
+	M := [3][3]float64{
+		{2 * sxx, 2 * sxy, sx},
+		{2 * sxy, 2 * syy, sy},
+		{sx, sy, n},
+	}
+	B := [3]float64{b0, b1, b2}
+	det := M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1]) -
+		M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0]) +
+		M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0])
+	debugReject := func(reason string) (int, bool) {
+		if os.Getenv("ICONFORGE_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "  reject: %s\n", reason)
+		}
+		return 0, false
+	}
+	if math.Abs(det) < 1e-3 {
+		return debugReject("det too small")
+	}
+	detA := B[0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1]) -
+		M[0][1]*(B[1]*M[2][2]-M[1][2]*B[2]) +
+		M[0][2]*(B[1]*M[2][1]-M[1][1]*B[2])
+	detB := M[0][0]*(B[1]*M[2][2]-M[1][2]*B[2]) -
+		B[0]*(M[1][0]*M[2][2]-M[1][2]*M[2][0]) +
+		M[0][2]*(M[1][0]*B[2]-B[1]*M[2][0])
+	detC := M[0][0]*(M[1][1]*B[2]-B[1]*M[2][1]) -
+		M[0][1]*(M[1][0]*B[2]-B[1]*M[2][0]) +
+		B[0]*(M[1][0]*M[2][1]-M[1][1]*M[2][0])
+	A := detA / det
+	Bc := detB / det
+	Cc := detC / det
+	if os.Getenv("ICONFORGE_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "  center=(%.1f,%.1f) C=%.1f\n", A, Bc, Cc)
+	}
+	r2 := A*A + Bc*Bc + Cc
+	if r2 <= 0.5 {
+		return debugReject("r2 <= 0.5")
+	}
+	r := math.Sqrt(r2)
+	if os.Getenv("ICONFORGE_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "  r=%.1f\n", r)
+	}
+	if A < -10 || A > float64(w)+10 || Bc < -10 || Bc > float64(h)+10 {
+		return debugReject("center out of image")
+	}
+	if r < 4 || r > float64(min(w, h))/1.5 {
+		return debugReject("r out of range")
+	}
+	return int(r + 0.5), true
+}
+
+// leastSquaresCircleFixedCenter 对每个角的样本做"圆心在角的对角线方向"的约束拟合。
+// 旋转变换：把对角线方向作为新 u 轴（沿角点出发的 45° 射线），v 垂直于 u。
+// 旋转角度：u = x·dx + y·dy（点积），v = -x·dy + y·dx（叉积）。
+// 圆心在对角线上 ⇒ v=0 ⇒ (u-C0)²+v²=R² ⇒ u²+v² = 2C0·u + (R²-C0²)
+// 对样本 (u, v) 计算 (u²+v²) 和 u，单变量最小二乘。
+func leastSquaresCircleFixedCenter(xs, ys []float64, dx, dy int) (int, bool) {
+	n := float64(len(xs))
+	if n < 3 {
+		return 0, false
+	}
+	var su, sp, suu, sup float64
+	for i := range xs {
+		// 旋转变换：u 沿对角线方向，v 垂直
+		u := float64(xs[i])*float64(dx) + float64(ys[i])*float64(dy)
+		_ = u
+		v := -float64(xs[i])*float64(dy) + float64(ys[i])*float64(dx)
+		_ = v
+		p := float64(xs[i])*float64(xs[i]) + float64(ys[i])*float64(ys[i])
+		su += u
+		sp += p
+		suu += u * u
+		sup += u * p
+	}
+	denom := n*suu - su*su
 	if math.Abs(denom) < 1e-3 {
 		return 0, false
 	}
-	slope := (n*sxy - sx*sy) / denom // = 2C
-	intercept := (sy - slope*sx) / n // = r²-2C²
-	C := slope / 2
-	r2 := intercept + 2*C*C
-	if C <= 0 || r2 <= 0.5 {
+	slope := (n*sup - su*sp) / denom     // = 2k
+	intercept := (sp - slope*su) / n     // = R² - 2k²
+	C0 := slope / 2
+	r2 := intercept + 2*C0*C0
+	if os.Getenv("ICONFORGE_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "  C0=%.1f r2=%.1f r=%.1f\n", C0, r2, math.Sqrt(max(r2, 0)))
+	}
+	if r2 <= 0.5 || C0 <= 0 {
 		return 0, false
 	}
 	r := math.Sqrt(r2)
-	// 物理合理性：pad=C-r 不应显著为负；半径不应越界
-	if C-r < -3 || r < 1 || r > float64(t+rInit) {
-		return 0, false
-	}
 	return int(r + 0.5), true
+}
+
+// isFg 颜色差异大于阈值即视为前景
+func isFg(c, bg color.RGBA) bool {
+	return colorDistance(c, bg) > 30
 }
 
 // averageColor 采样一个区域的平均色

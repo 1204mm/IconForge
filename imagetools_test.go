@@ -37,6 +37,90 @@ func makeRoundedIcon(s, r int) *image.NRGBA {
 	return img
 }
 
+// makeRoundedIconOnGradient 模拟"白渐变背景 + 中心前景图"的真实图片（参考用户提供图）：
+// 整张淡白渐变底，中心是占满 80% 的蓝色圆角前景（与外白底形成清晰色块边界）。
+func makeRoundedIconOnGradient(s, r int) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, s, s))
+	for y := 0; y < s; y++ {
+		for x := 0; x < s; x++ {
+			// 背景：白→浅灰渐变（轻微，避免被 cornerBgUniform 当成纯色）
+			shade := uint8(245 - (x+y)/(s*2/255*8)) // 微小渐变
+			img.Set(x, y, color.NRGBA{R: shade, G: shade, B: shade + 2, A: 255})
+		}
+	}
+	pad := s / 10 // 占满约 80%
+	inner := s - pad*2
+	oy := pad
+	for y := 0; y < inner; y++ {
+		for x := 0; x < inner; x++ {
+			d := roundedRectSDF(float64(x)+0.5, float64(y)+0.5, float64(inner), float64(inner), float64(r))
+			if d <= 0 {
+				img.Set(x+pad, y+oy, color.NRGBA{R: 30, G: 100, B: 230, A: 255})
+			}
+		}
+	}
+	return img
+}
+
+func TestDetectCornerRadiusRealistic(t *testing.T) {
+	// 1024 图，期望半径 200（≈ 20% 边长）。容差 ±25%。
+	img := makeRoundedIconOnGradient(1024, 200)
+	r, detected := DetectCornerRadius(img)
+	t.Logf("检测到: %v, 识别半径: %d", detected, r)
+	if !detected {
+		t.Fatal("应检测到圆角背景")
+	}
+	lo, hi := 200*75/100, 200*125/100
+	if r < lo || r > hi {
+		t.Logf("识别半径 %d 超出预期范围 [%d,%d]（首次仅信息打印）", r, lo, hi)
+	}
+}
+
+// makeRoundedSquareOnGradient 模拟用户提供的真实图片：
+// 整张图的外层是带圆角的方形（圆角外区域透明），内部是淡白渐变 + 中心蓝色图标。
+// 这才是 iOS 风格的应用图标结构：外层圆角 + 内部内容。
+func makeRoundedSquareOnGradient(s, r int) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, s, s))
+	// 默认全部透明（alpha=0）
+	for y := 0; y < s; y++ {
+		for x := 0; x < s; x++ {
+			// 圆角矩形内部填淡白渐变，圆角外保持透明
+			d := roundedRectSDF(float64(x)+0.5, float64(y)+0.5, float64(s), float64(s), float64(r))
+			if d <= 0 {
+				shade := uint8(245 - (x+y)/(s*2/255*8)) // 微小渐变
+				img.Set(x, y, color.NRGBA{R: shade, G: shade, B: shade + 2, A: 255})
+			}
+		}
+	}
+	// 中心蓝色图标（简单的圆角矩形，占满约 60%）
+	pad := s / 5
+	inner := s - pad*2
+	iconR := inner / 4
+	for y := 0; y < inner; y++ {
+		for x := 0; x < inner; x++ {
+			d := roundedRectSDF(float64(x)+0.5, float64(y)+0.5, float64(inner), float64(inner), float64(iconR))
+			if d <= 0 {
+				img.Set(x+pad, y+pad, color.NRGBA{R: 30, G: 100, B: 230, A: 255})
+			}
+		}
+	}
+	return img
+}
+
+func TestDetectCornerRadiusUserImage(t *testing.T) {
+	// 1024 图，期望半径 200（≈ 20% 边长）。±20% 容差。
+	img := makeRoundedSquareOnGradient(1024, 200)
+	r, detected := DetectCornerRadius(img)
+	t.Logf("检测到: %v, 识别半径: %d", detected, r)
+	if !detected {
+		t.Fatal("应检测到圆角背景")
+	}
+	lo, hi := 200*80/100, 200*120/100
+	if r < lo || r > hi {
+		t.Fatalf("识别半径 %d 超出预期范围 [%d,%d]", r, lo, hi)
+	}
+}
+
 func TestDetectCornerRadius(t *testing.T) {
 	img := makeRoundedIcon(512, 64)
 	r, detected := DetectCornerRadius(img)

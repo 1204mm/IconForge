@@ -79,6 +79,10 @@ func DetectCornerRadius(img image.Image) (radius int, detected bool) {
 
 		r := int(float64(e-t)/0.7071) + 1
 		if r > 0 {
+			// 用最小二乘圆弧拟合精化半径（更稳更准），结果合理时采用
+			if rf, okf := fitCornerArc(img, bounds, cx, cy, dx, dy, bg, t, r); okf && rf >= r/2 && rf <= r*3/2 {
+				r = rf
+			}
 			radii = append(radii, r)
 		}
 	}
@@ -115,7 +119,23 @@ func scanCornerDiagonal(img image.Image, bounds image.Rectangle, cx, cy, dx, dy 
 			return 0, false
 		}
 		if !isBg(pixelAt(img, bounds, x, y), bg) {
-			return step, true
+			// 抗噪：后续连续 2 点仍非背景才判定为转折，避免孤立噪点误判
+			ok := true
+			for k := 1; k <= 2; k++ {
+				nx := cx + dx*(step+k)
+				ny := cy + dy*(step+k)
+				if nx < 0 || nx >= w || ny < 0 || ny >= h {
+					break
+				}
+				if isBg(pixelAt(img, bounds, nx, ny), bg) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return step, true
+			}
+			// 视为噪点，继续向内扫描
 		}
 	}
 	return 0, false
@@ -179,6 +199,82 @@ func scanCornerEdges(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int
 		}
 	}
 	return best, found
+}
+
+// fitCornerArc 沿圆角弧段采样一组色块边界点，用最小二乘拟合圆角半径 r，
+// 比单点估算（对角线+边缘）更稳更准。仅采集 v∈[t, t+0.72r] 的纯弧上样本，避开 pad 直线段。
+func fitCornerArc(img image.Image, bounds image.Rectangle, cx, cy, dx, dy int, bg color.RGBA, t, rInit int) (int, bool) {
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if t < 2 || rInit <= 0 {
+		return 0, false
+	}
+	vStart := t
+	vEnd := t + int(float64(rInit)*0.72) // 弧止于 pad+r ≈ t + 0.7071*r
+	if vEnd >= h {
+		vEnd = h - 1
+	}
+	if vStart >= vEnd {
+		return 0, false
+	}
+
+	var xs, ys []float64
+	for v := vStart; v <= vEnd; v++ {
+		py := cy + dy*v
+		if py < 0 || py >= h {
+			break
+		}
+		u := 0
+		for u < w {
+			px := cx + dx*u
+			if px < 0 || px >= w {
+				break
+			}
+			if !isBg(pixelAt(img, bounds, px, py), bg) {
+				break
+			}
+			u++
+		}
+		if u < 3 {
+			continue
+		}
+		xs = append(xs, float64(u))
+		ys = append(ys, float64(v))
+	}
+	if len(xs) < 4 {
+		return 0, false
+	}
+
+	// 圆弧方程 (x-C)²+(y-C)²=r²（圆心在 (C,C)，C=pad+r）
+	// 展开： x²+y² = 2C(x+y) + (r²-2C²)
+	// 对样本做线性最小二乘：Y=x²+y², X=x+y, Y=slope·X+intercept，slope=2C, intercept=r²-2C²
+	n := float64(len(xs))
+	var sx, sy, sxx, sxy float64
+	for i := range xs {
+		X := xs[i] + ys[i]
+		Y := xs[i]*xs[i] + ys[i]*ys[i]
+		sx += X
+		sy += Y
+		sxx += X * X
+		sxy += X * Y
+	}
+	denom := n*sxx - sx*sx
+	if math.Abs(denom) < 1e-3 {
+		return 0, false
+	}
+	slope := (n*sxy - sx*sy) / denom // = 2C
+	intercept := (sy - slope*sx) / n // = r²-2C²
+	C := slope / 2
+	r2 := intercept + 2*C*C
+	if C <= 0 || r2 <= 0.5 {
+		return 0, false
+	}
+	r := math.Sqrt(r2)
+	// 物理合理性：pad=C-r 不应显著为负；半径不应越界
+	if C-r < -3 || r < 1 || r > float64(t+rInit) {
+		return 0, false
+	}
+	return int(r + 0.5), true
 }
 
 // averageColor 采样一个区域的平均色

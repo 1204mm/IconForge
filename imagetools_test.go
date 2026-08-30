@@ -43,8 +43,8 @@ func TestDetectCornerRadius(t *testing.T) {
 	if !detected {
 		t.Fatal("应检测到圆角背景")
 	}
-	// 识别值允许 ±30% 误差
-	lo, hi := 64*7/10, 64*13/10
+	// 识别值允许 ±20% 误差（圆弧拟合精化后更准）
+	lo, hi := 64*80/100, 64*120/100
 	if r < lo || r > hi {
 		t.Fatalf("识别半径 %d 超出预期范围 [%d,%d]", r, lo, hi)
 	}

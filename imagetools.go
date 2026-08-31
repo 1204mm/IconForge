@@ -341,17 +341,25 @@ func scanCornerDiagonal(img image.Image, bounds image.Rectangle, cx, cy, dx, dy 
 				}
 			}
 			if ok {
-				// 突变性校验：t-1 像素必须仍"明显接近背景"（distance < 8）。
-				// 真实圆角的过渡是突变的（透明→不透明），t-1 几乎与背景一致；
-				// 渐变图像的过渡是平滑的，t-1 距背景已超阈值 → 视为渐变，跳过。
-				if step > 1 {
-					prev := pixelAt(img, bounds, cx+dx*(step-1), cy+dy*(step-1))
-					if colorDistance(prev, bg) > 8 {
-						continue
-					}
+			// 突变性校验：t-1 像素必须仍"明显接近背景"。
+			// 真实圆角的过渡是突变的（1-2px 内跳变），t-1 几乎与背景一致；
+			// 渐变图像的过渡是平滑的，t-1 距背景已明显偏移 → 视为渐变，跳过。
+			// 两个宽容项：
+			//   1. 距离阈值 12（与 isBg 一致）：抗锯齿过渡像素的 RGB 混合色仍较接近背景
+			//   2. 透明背景下 alpha<100 的半透明 AA 像素视为接近背景
+			//      （其 RGB 是与前景的混合色，RGB 距离不可靠，只有 alpha 是真实信号）
+			if step > 1 {
+				prev := pixelAt(img, bounds, cx+dx*(step-1), cy+dy*(step-1))
+				close := colorDistance(prev, bg) < 12
+				if !close && bg.A < 20 && prev.A < 100 {
+					close = true
 				}
-				return step, true
+				if !close {
+					continue
+				}
 			}
+			return step, true
+		}
 			// 视为噪点，继续向内扫描
 		}
 	}

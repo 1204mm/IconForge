@@ -95,10 +95,13 @@ func DetectCornerRadius(img image.Image) (radius int, detected bool) {
 		return 0, false
 	}
 
-	// 取中位数 + 10% 余量（把抗锯齿边缘也切干净）
+	// 取中位数 + 固定 2px 余量（补偿抗锯齿边缘残留）。
+	// 历史经验：之前用 +10% 比例余量，在大半径图（200+）看起来正常，
+	// 但小半径图（<100）会被多切 1.5-2 倍比例 → 把图标本体的圆角切坏。
+	// 固定像素余量更稳定：大半径/小半径绝对差值都只有 1-2px。
 	sort.Ints(radii)
 	median := radii[len(radii)/2]
-	result := median + median/10
+	result := median + 2
 	maxR := int(math.Min(float64(w), float64(h))) / 2
 	if result > maxR {
 		result = maxR

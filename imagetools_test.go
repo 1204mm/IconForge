@@ -136,6 +136,28 @@ func TestDetectCornerRadius(t *testing.T) {
 	t.Logf("识别半径: %d (期望约64)", r)
 }
 
+// TestDetectCornerRadiusSmallNoOvershoot 验证"小半径不被多切"：
+// 历史 bug：+10% 比例余量在小半径时会多切 1.5-2 倍比例；
+// 修复后用固定 2px 余量，"多切"应控制在 +15% 以内（偏小不限制，因为更安全）。
+func TestDetectCornerRadiusSmallNoOvershoot(t *testing.T) {
+	img := makeRoundedIcon(512, 32) // 期望半径 32
+	r, detected := DetectCornerRadius(img)
+	if !detected {
+		t.Fatal("应检测到圆角背景")
+	}
+	// 关注"多切"问题：r 不能超过 actual * 1.15
+	maxR := 32 * 115 / 100
+	if r > maxR {
+		t.Fatalf("小半径识别 %d 超过 +15%% 上限 (%d)，会把图标本体多切", r, maxR)
+	}
+	// 下限也要合理（不小于 actual * 0.7，否则可能没切干净）
+	minR := 32 * 70 / 100
+	if r < minR {
+		t.Fatalf("小半径识别 %d 低于 -30%% 下限 (%d)，可能根本没识别到", r, minR)
+	}
+	t.Logf("识别半径: %d (期望约32)", r)
+}
+
 func TestDetectFlatImage(t *testing.T) {
 	// 满幅纯色渐变图，不应检测到圆角
 	img := image.NewNRGBA(image.Rect(0, 0, 200, 200))

@@ -275,6 +275,63 @@ func TestBuildIconPipeline(t *testing.T) {
 	t.Logf("生成 ICO 大小: %d 字节", len(data))
 }
 
+// TestDetectContentBounds 测试四周留白场景下的内容包围盒识别
+func TestDetectContentBounds(t *testing.T) {
+	// 场景1：1000x1000 大图，中心 600x600 蓝色实心矩形（四周白边）
+	img := image.NewNRGBA(image.Rect(0, 0, 1000, 1000))
+	for y := 0; y < 1000; y++ {
+		for x := 0; x < 1000; x++ {
+			img.Set(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+	for y := 200; y < 800; y++ {
+		for x := 200; x < 800; x++ {
+			img.Set(x, y, color.NRGBA{R: 30, G: 100, B: 230, A: 255})
+		}
+	}
+	bounds := img.Bounds()
+	t.Logf("img bounds: %v, w=%d h=%d", bounds, bounds.Dx(), bounds.Dy())
+	for _, c := range [][2]int{{0, 0}, {999, 0}, {0, 999}, {999, 999}} {
+		r, g, b, a := img.At(c[0], c[1]).RGBA()
+		t.Logf("corner (%d,%d): R=%d G=%d B=%d A=%d", c[0], c[1], r>>8, g>>8, b>>8, a>>8)
+	}
+	x, y, w, h, ok := DetectContentBounds(img)
+	t.Logf("DetectContentBounds: (%d,%d,%d,%d) ok=%v", x, y, w, h, ok)
+	if !ok {
+		t.Fatal("应检测到内容包围盒")
+	}
+	if x != 200 || y != 200 || w != 600 || h != 600 {
+		t.Fatalf("包围盒错误: 期望(200,200,600,600), 实际(%d,%d,%d,%d)", x, y, w, h)
+	}
+
+	// 场景2：满幅图（无留白）→ 不应触发
+	img2 := image.NewNRGBA(image.Rect(0, 0, 500, 500))
+	for y := 0; y < 500; y++ {
+		for x := 0; x < 500; x++ {
+			img2.Set(x, y, color.NRGBA{R: 30, G: 100, B: 230, A: 255})
+		}
+	}
+	_, _, _, _, ok2 := DetectContentBounds(img2)
+	if ok2 {
+		t.Fatal("满幅图不应触发自动定位")
+	}
+
+	// 场景3：透明外圈 + 不透明内矩形（透明背景场景）
+	img3 := image.NewNRGBA(image.Rect(0, 0, 800, 800))
+	for y := 200; y < 600; y++ {
+		for x := 200; x < 600; x++ {
+			img3.Set(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+	x3, y3, w3, h3, ok3 := DetectContentBounds(img3)
+	if !ok3 {
+		t.Fatal("透明背景应检测到内容包围盒")
+	}
+	if x3 != 200 || y3 != 200 || w3 != 400 || h3 != 400 {
+		t.Fatalf("透明背景包围盒错误: 期望(200,200,400,400), 实际(%d,%d,%d,%d)", x3, y3, w3, h3)
+	}
+}
+
 func TestDebugUserImage(t *testing.T) {
 	os.Setenv("ICONFORGE_DEBUG", "1")
 	f, err := os.Open("debug_user.png")

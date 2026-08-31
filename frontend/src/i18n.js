@@ -26,6 +26,8 @@ const messages = {
     cropBadge: '拖动画布调整位置',
     side: '边长',
     center: '居中',
+    autoAligned: '已自动对齐到图标',
+    recenter: '重定中心',
     // ICO 尺寸
     icoSizes: 'ICO 尺寸',
     selectAll: '全选',
@@ -60,6 +62,8 @@ const messages = {
     cropBadge: 'Drag on canvas to reposition',
     side: 'Size',
     center: 'Center',
+    autoAligned: 'Auto-aligned to content',
+    recenter: 'Recenter',
     icoSizes: 'ICO Sizes',
     selectAll: 'Select all',
     deselectAll: 'Deselect all',

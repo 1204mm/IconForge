@@ -365,11 +365,9 @@ func TestBuildIconPipeline(t *testing.T) {
 }
 
 // TestDetectIconParamsGlyphCrop 复现"多切圆角"场景：
-// 白底页面 + 白色系图标本体（色差 < 15，会被内容检测漏掉）+ 中心深色图案。
-// 旧逻辑：内容框只框住深色图案（约 500px），圆角半径却是外层图标的（约 216px）
-//         → 216/500 = 43% → 图案四角被切掉近一半。
-// 新逻辑：自动裁剪生效时，在裁剪区域上重测圆角（图案自身圆角 ~100px）
-//         → 100/500 = 20%，比例正常。
+// 白底页面 + 白色系图标本体（旧算法色差~14<15 会漏掉）+ 中心深色图案。
+// 结构化内容检测升级后：浅色图标本体（1080 边长）也应被框进来 →
+// 内容框 = 图标本体，裁剪后在图标本体上重测圆角（~216/1080 = 20%）。
 func TestDetectIconParamsGlyphCrop(t *testing.T) {
 	s := 1200
 	img := image.NewNRGBA(image.Rect(0, 0, s, s))
@@ -378,7 +376,7 @@ func TestDetectIconParamsGlyphCrop(t *testing.T) {
 			img.Set(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: 255}) // 白色页面底
 		}
 	}
-	// 白色系图标（色差 ~14 < 15）：1080 边长，圆角 216（20%），位于 (60,60)
+	// 白色系图标（色差 ~14）：1080 边长，圆角 216（20%），位于 (60,60)
 	pad, inner, iconR := 60, 1080, 216
 	for y := pad; y < pad+inner; y++ {
 		for x := pad; x < pad+inner; x++ {
@@ -402,9 +400,13 @@ func TestDetectIconParamsGlyphCrop(t *testing.T) {
 	r, cornerOK, cx, cy, cw, ch, contentOK := DetectIconParams(img)
 	t.Logf("radius=%d cornerOK=%v content=(%d,%d,%d,%d) contentOK=%v", r, cornerOK, cx, cy, cw, ch, contentOK)
 
-	// 内容应被检测到（框住蓝色图案，浅色图标被漏掉）
+	// 内容应被检测到
 	if !contentOK {
 		t.Fatal("应检测到内容包围盒")
+	}
+	// 结构化检测升级：应框住浅色图标本体（1080），而不是只框中心图案（500）
+	if cw < 1000 || ch < 1000 {
+		t.Fatalf("内容框 (%d,%d,%d,%d) 只框住了中心图案，浅色图标本体被漏掉", cx, cy, cw, ch)
 	}
 	// 裁剪框边长（与前端一致）
 	side := cw
@@ -416,13 +418,13 @@ func TestDetectIconParamsGlyphCrop(t *testing.T) {
 	}
 	if cornerOK {
 		ratio := float64(r) * 100 / float64(side)
-		t.Logf("radius/crop = %.1f%%（图案实际圆角比例 100/500 = 20%%）", ratio)
-		// 多切防护：比例不应超过图案实际比例 + 一倍（旧 bug 会到 43%）
+		t.Logf("radius/crop = %.1f%%（图标本体实际圆角比例 216/1080 = 20%%）", ratio)
+		// 多切防护：比例不应明显超过实际（旧 bug 只框图案时会到 43%）
 		if ratio > 30 {
-			t.Fatalf("圆角比例 %.1f%% 过大（旧 bug：外层图标半径套在内层图案上导致多切）", ratio)
+			t.Fatalf("圆角比例 %.1f%% 过大（多切风险）", ratio)
 		}
 	} else {
-		t.Logf("图案区域未检测到圆角（不切，安全）")
+		t.Logf("裁剪区域未检测到圆角（不切，安全）")
 	}
 }
 

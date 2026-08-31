@@ -199,24 +199,58 @@ func DetectContentBounds(img image.Image) (int, int, int, int, bool) {
 		fmt.Fprintf(os.Stderr, "DetectContentBounds: bg=R%dG%dB%dA%d transparent=%v\n", bg.R, bg.G, bg.B, bg.A, isTransparent)
 	}
 
-	// 内容判定：透明背景下 alpha>=128 视为内容；不透明背景下与背景色差 > 15 视为内容
-	isContent := func(c color.RGBA) bool {
+	// 内容判定（结构化，两级阈值）：
+	// - 强内容：单像素与背景色差 > 15（或透明背景下 alpha>=128）—— 深色图案、清晰边界
+	// - 弱内容：单像素色差 > 8 —— 白上白的浅色图标本体（色差~14）只有弱内容
+	// 行/列级判定：出现任一强内容像素即算；否则统计弱内容占比，过半才算。
+	// 这样"整行/整列的结构性突变"（图标边界）能识别，而稀疏噪点、
+	// JPEG 压缩杂色不会误触发；渐变背景若整片偏移会得到"铺满整图"→ 不触发，安全。
+	strongContent := func(c color.RGBA) bool {
 		if isTransparent {
 			return c.A >= 128
 		}
 		return colorDistance(c, bg) > 15
 	}
+	weakContent := func(c color.RGBA) bool {
+		if isTransparent {
+			return c.A >= 64
+		}
+		return colorDistance(c, bg) > 8
+	}
+	// rowHasContent 判断第 y 行是否有内容（强内容提前退出，弱内容统计过半）
+	rowHasContent := func(y int) bool {
+		weak := 0
+		for x := 0; x < w; x++ {
+			c := pixelAt(img, bounds, x, y)
+			if strongContent(c) {
+				return true
+			}
+			if weakContent(c) {
+				weak++
+			}
+		}
+		return weak > w/2
+	}
+	// colHasContent 判断第 x 列是否有内容
+	colHasContent := func(x int) bool {
+		weak := 0
+		for y := 0; y < h; y++ {
+			c := pixelAt(img, bounds, x, y)
+			if strongContent(c) {
+				return true
+			}
+			if weakContent(c) {
+				weak++
+			}
+		}
+		return weak > h/2
+	}
 
 	// 顶边向下扫描
 	topY := -1
 	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			if isContent(pixelAt(img, bounds, x, y)) {
-				topY = y
-				break
-			}
-		}
-		if topY >= 0 {
+		if rowHasContent(y) {
+			topY = y
 			break
 		}
 	}
@@ -230,13 +264,8 @@ func DetectContentBounds(img image.Image) (int, int, int, int, bool) {
 	// 底边向上扫描
 	bottomY := -1
 	for y := h - 1; y >= topY; y-- {
-		for x := 0; x < w; x++ {
-			if isContent(pixelAt(img, bounds, x, y)) {
-				bottomY = y
-				break
-			}
-		}
-		if bottomY >= 0 {
+		if rowHasContent(y) {
+			bottomY = y
 			break
 		}
 	}
@@ -247,13 +276,8 @@ func DetectContentBounds(img image.Image) (int, int, int, int, bool) {
 	// 左边向右扫描
 	leftX := -1
 	for x := 0; x < w; x++ {
-		for y := 0; y < h; y++ {
-			if isContent(pixelAt(img, bounds, x, y)) {
-				leftX = x
-				break
-			}
-		}
-		if leftX >= 0 {
+		if colHasContent(x) {
+			leftX = x
 			break
 		}
 	}
@@ -264,13 +288,8 @@ func DetectContentBounds(img image.Image) (int, int, int, int, bool) {
 	// 右边向左扫描
 	rightX := -1
 	for x := w - 1; x >= leftX; x-- {
-		for y := 0; y < h; y++ {
-			if isContent(pixelAt(img, bounds, x, y)) {
-				rightX = x
-				break
-			}
-		}
-		if rightX >= 0 {
+		if colHasContent(x) {
+			rightX = x
 			break
 		}
 	}

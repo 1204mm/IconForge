@@ -75,11 +75,8 @@ func loadImageByPath(path string) (*ImageInfo, error) {
 		mime = "image/jpeg"
 	}
 
-	// 自动识别圆角
-	radius, detected := DetectCornerRadius(img)
-
-	// 自动定位内容包围盒（用于四周有留白的情况）
-	cx, cy, cw, ch, contentOK := DetectContentBounds(img)
+	// 自动识别圆角 + 内容包围盒（组合检测：自动裁剪生效时半径在裁剪区域上重测，保证尺度一致）
+	radius, detected, cx, cy, cw, ch, contentOK := DetectIconParams(img)
 
 	return &ImageInfo{
 		Name:            filepath.Base(path),

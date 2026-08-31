@@ -117,6 +117,54 @@ func DetectCornerRadius(img image.Image) (radius int, detected bool) {
 	return result, true
 }
 
+// DetectIconParams 自动识别圆角半径 + 内容包围盒（组合入口，保证两者互相匹配）。
+//
+// 关键：当检测到内容包围盒（自动裁剪生效）时，圆角半径必须在"裁剪区域"上重新检测。
+// 因为 DetectCornerRadius 是在整图上测的，测到的是"外层结构"的圆角；
+// 若内容包围盒只框住了内层图案（如白底+白色系图标+中心深色图案的图片，
+// 浅色图标本体色差 < 15 会被漏掉），裁剪框远小于外层结构，
+// 直接套用外层半径会导致圆角比例爆炸（40%+）→ 图案四角被切掉近一半。
+func DetectIconParams(img image.Image) (radius int, cornerDetected bool, cx, cy, cw, ch int, contentDetected bool) {
+	radius, cornerDetected = DetectCornerRadius(img)
+	cx, cy, cw, ch, contentDetected = DetectContentBounds(img)
+	if !contentDetected {
+		return
+	}
+
+	// 与前端一致的裁剪框：以内容中心为中心的最大正方形
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	side := cw
+	if ch > side {
+		side = ch
+	}
+	if side > w {
+		side = w
+	}
+	if side > h {
+		side = h
+	}
+	x0 := cx + cw/2 - side/2
+	y0 := cy + ch/2 - side/2
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	if x0+side > w {
+		x0 = w - side
+	}
+	if y0+side > h {
+		y0 = h - side
+	}
+
+	// 在裁剪区域上重新检测圆角：半径与裁剪框天然同尺度
+	sub := imaging.Crop(img, image.Rect(b.Min.X+x0, b.Min.Y+y0, b.Min.X+x0+side, b.Min.Y+y0+side))
+	radius, cornerDetected = DetectCornerRadius(sub)
+	return
+}
+
 // DetectContentBounds 自动检测"非背景"内容的包围盒。
 // 用于图片四周有留白（白底/透明）+ 中心图标本体的场景，让前端自动把裁剪框对齐到图标。
 // 返回 (x, y, w, h, detected)。当内容几乎填满整图时返回 detected=false，前端可保持默认居中裁剪。
